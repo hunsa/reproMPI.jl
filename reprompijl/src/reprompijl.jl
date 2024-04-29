@@ -4,6 +4,8 @@ using ArgParse
 using Printf
 using Pkg
 using Statistics
+using PkgVersion
+using Dates
 
 @enum Collective begin
     MPI_Allreduce
@@ -96,9 +98,8 @@ function print_info(args::Args)
     println("#@verbose=", args.verbose)
     println("#@random=", args.random)
     println("#@check=", args.check)
-    println("####")
     println("#@Julia Version=", VERSION)
-    println("#@MPI.jl Version=", Pkg.installed()["MPI"])
+    println("#@MPI.jl Version=", PkgVersion.Version(MPI))
     println("#@MPI Version=", strip(split(read(`ompi_info`, String), "\n")[2]))
 end
 
@@ -143,7 +144,7 @@ function print_simple(times::Array{Float64,1}, args::Args, call::Collective, siz
     end
 end
 
-function print_summary(times::Array{Float64,1}, args::Args, call::Collective, size::Int64)
+function print_summary(times::Array{Float64,1}, args::Args, call::Collective, msize::Int64)
     comm = MPI.COMM_WORLD
     rank = MPI.Comm_rank(comm)
     size = MPI.Comm_size(comm)
@@ -175,8 +176,8 @@ function print_summary(times::Array{Float64,1}, args::Args, call::Collective, si
 
         meanRuntime = mean(all_times)
 
-        Printf.@printf("%50s %10d %14.10f %14.10f %14.10f %14.10f\n",
-                    call, args.nrep, meanRuntime, medianRuntime, minRuntime, maxRuntime)
+        Printf.@printf("%40s %10d %10d %14.10f %14.10f %14.10f %14.10f\n",
+                    call, msize, args.nrep, meanRuntime, medianRuntime, minRuntime, maxRuntime)
     end
 end
 
@@ -272,8 +273,8 @@ function bench(args::Args)
         if args.verbose
             Printf.@printf("%7s %50s %10s %12s %14s\n",  "process", "test", "nrep", "count", "time")
         elseif args.summary
-            Printf.@printf("%50s %10s %14s %14s %14s %14s\n",
-                    "test", "nrep", "mean_sec", "median_sec", "min_sec", "max_sec")
+            Printf.@printf("%40s %10s %10s %14s %14s %14s %14s\n",
+                    "test", "count", "nrep", "mean_sec", "median_sec", "min_sec", "max_sec")
         else
             Printf.@printf("%50s %10s %12s %14s\n", "test", "nrep", "count", "runtime_sec")
         end
@@ -284,6 +285,8 @@ function bench(args::Args)
             # init sync
             MPI.Barrier(comm)
 
+            buf_size = 0.0
+
             if call == MPI_Allreduce
                 if args.random
                     send = rand(UInt8, msize)
@@ -292,6 +295,7 @@ function bench(args::Args)
                     send = zeros(UInt8, msize)
                     recv = zeros(UInt8, msize)
                 end
+                buf_size = sizeof(send)
 
                 if args.check
                     result = check_allreduce(msize, send)
@@ -313,6 +317,7 @@ function bench(args::Args)
                     send = zeros(UInt8, msize)
                     recv = zeros(UInt8, msize)
                 end
+                buf_size = sizeof(send)
 
                 for i in 1:args.nrep
                     # start sync
@@ -330,6 +335,8 @@ function bench(args::Args)
                     send = zeros(UInt8, msize * size)
                     recv = zeros(UInt8, msize * size)
                 end
+                buf_size = msize*sizeof(UInt8)
+
                 for i in 1:args.nrep
                     # start sync
                     MPI.Barrier(comm)
@@ -344,6 +351,8 @@ function bench(args::Args)
                 else
                     buf = zeros(UInt8, msize)
                 end
+                buf_size = sizeof(buf)
+
                 for i in 1:args.nrep
                     # start sync
                     MPI.Barrier(comm)
@@ -355,7 +364,7 @@ function bench(args::Args)
             end
 
             # print timing output
-            print_results(times, args, call, msize)
+            print_results(times, args, call, buf_size)
 
             all_correct = true
             if rank == root && args.check
@@ -384,13 +393,22 @@ function bench(args::Args)
 end
 
 function main()
+        
     args = parse_parameters()
     MPI.Init()
     rank = MPI.Comm_rank(MPI.COMM_WORLD)
+    sdate = now()
+
     if rank == 0
         print_info(args)
     end
+    st = time()
     bench(args)
+    et = time()
+    if rank == 0
+        @printf("# Benchmark started at %s\n", sdate)
+        @printf("# Execution time: %ds\n", et-st)
+    end
     MPI.Finalize()
 end
 
